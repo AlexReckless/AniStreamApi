@@ -49,7 +49,7 @@ async function fetchHtmlWithPuppeteer(url) {
   return content;
 }
 
-const DEFAULT_DOMAIN = "www4.animeflv.io";
+const DEFAULT_DOMAIN = "www4.animeflv.net";
 
 const HTTP_HEADERS = {
   "User-Agent":

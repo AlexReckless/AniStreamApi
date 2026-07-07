@@ -55,7 +55,7 @@ function resolveAbsoluteUrl(urlCandidate, domain = DEFAULT_DOMAIN) {
   }
 
   try {
-    const base = `https://${domain}`;
+    const base = `https://${domain}/`;
     return new URL(urlCandidate, base).toString();
   } catch (_error) {
     return null;

@@ -113,8 +113,81 @@ function findProviderForUrl(urlCandidate) {
   }
 }
 
+// Buscar imagen en otros proveedores si animeav1 no la tiene
+async function enrichAnimeav1WithImageFallback(results) {
+  const needsImage = results.filter(r => !r.image);
+  
+  if (needsImage.length === 0) {
+    return results;
+  }
+
+  console.log(`[enrichAnimeav1WithImageFallback] ${needsImage.length} animes sin imagen, buscando en otros proveedores...`);
+
+  // Intentar obtener imágenes de tioanime y jkanime
+  const fallbackProviders = [
+    { id: "tioanime", service: tioanimeService },
+    { id: "jkanime", service: jkanimeService },
+  ];
+
+  const enrichedResults = await Promise.all(
+    needsImage.map(async (anime) => {
+      // Si ya tiene imagen, devolver como está
+      if (anime.image) {
+        return anime;
+      }
+
+      // Intentar buscar en proveedores de fallback
+      for (const fallback of fallbackProviders) {
+        try {
+          const fallbackResults = await fallback.service.searchAnime(anime.title, fallback.id === "tioanime" ? "tioanime.com" : "jkanime.net");
+          
+          if (fallbackResults && fallbackResults.data && Array.isArray(fallbackResults.data.results)) {
+            const match = fallbackResults.data.results.find(r =>
+              (r.title || "").toLowerCase().includes(anime.title.toLowerCase()) ||
+              (anime.title || "").toLowerCase().includes((r.title || "").toLowerCase())
+            );
+
+            if (match && match.image) {
+              console.log(`[enrichAnimeav1WithImageFallback] Encontrada imagen para "${anime.title}" en ${fallback.id}`);
+              return {
+                ...anime,
+                image: match.image,
+                backdrop: match.backdrop || anime.backdrop,
+              };
+            }
+          }
+        } catch (err) {
+          console.error(`[enrichAnimeav1WithImageFallback] Error buscando "${anime.title}" en ${fallback.id}:`, err.message);
+        }
+      }
+
+      return anime;
+    })
+  );
+
+  // Reemplazar resultados enriquecidos
+  return results.map(r => enrichedResults.find(e => e.url === r.url) || r);
+}
+
 async function searchAnime(query, domainCandidate) {
   const forcedProvider = findProviderByDomain(domainCandidate) || findProviderById(domainCandidate);
+  
+  // Si es animeav1, usar búsqueda directa sin fallback de imagen
+  if (forcedProvider && forcedProvider.id === "animeav1") {
+    const result = await forcedProvider.service.searchAnime(query, forcedProvider.domains[0]);
+    const resultsWithFallback = await enrichAnimeav1WithImageFallback(result?.data?.results || []);
+    
+    return {
+      ...result,
+      data: {
+        ...result.data,
+        results: resultsWithFallback,
+      },
+      source: result?.source || forcedProvider.id,
+    };
+  }
+
+  // Para otros proveedores, hacer búsqueda normal
   const providersToTry = forcedProvider ? [forcedProvider] : PROVIDERS;
 
   let lastEmpty = null;
@@ -122,7 +195,9 @@ async function searchAnime(query, domainCandidate) {
 
   for (const provider of providersToTry) {
     try {
-      const result = await provider.service.searchAnime(query, provider.domains[0]);
+      // Usar el dominio específico si se pasó, sino usar el primer dominio del proveedor
+      const domainToUse = forcedProvider && domainCandidate ? domainCandidate : provider.domains[0];
+      const result = await provider.service.searchAnime(query, domainToUse);
       const count = result?.data?.count ?? 0;
       if (count > 0 || forcedProvider) {
         return {

@@ -684,7 +684,7 @@ function chooseLikelySearchArray(dataRoot) {
 
 function mapSearchResults(array, domain) {
   return array
-    .map((item) => {
+    .map((item, idx) => {
       if (!isObject(item)) {
         return null;
       }
@@ -700,12 +700,26 @@ function mapSearchResults(array, domain) {
         return null;
       }
 
+      const imageUrl = resolveAbsoluteUrl(item.poster || item.image || item.cover, domain);
+      
+      // Debug: mostrar si encontramos imagen
+      if (idx < 3) {  // Solo para los primeros 3 items
+        console.log(`[mapSearchResults] Item "${title}":`, {
+          hasImage: !!imageUrl,
+          poster: item.poster,
+          image: item.image,
+          cover: item.cover,
+          imageUrl,
+          allKeys: Object.keys(item)
+        });
+      }
+
       return {
         id: item.id ?? null,
         title,
         slug,
         url,
-        image: resolveAbsoluteUrl(item.poster || item.image || item.cover, domain),
+        image: imageUrl,
         backdrop: resolveAbsoluteUrl(item.backdrop || item.banner, domain),
         type: (isObject(item.category) ? item.category.name : item.type) || null,
         score: parseNumber(item.score),
@@ -858,6 +872,60 @@ async function getAnimeInfo(urlCandidate) {
   };
 }
 
+async function enrichSearchResultsWithImages(results, domain, maxToEnrich = 10) {
+  if (!results || results.length === 0) {
+    return results;
+  }
+
+  // Limitar a los primeros N resultados para no hacer demasiadas llamadas
+  const toEnrich = results.slice(0, maxToEnrich);
+  
+  // Hacer fetch de info en paralelo para cada uno
+  const enrichedPromises = toEnrich.map(async (anime) => {
+    try {
+      const html = await fetchHtml(anime.url);
+      const svelteData = extractSvelteData(html);
+      
+      if (svelteData) {
+        const media = chooseBestMediaCandidate(svelteData);
+        if (media) {
+          const image = resolveAbsoluteUrl(
+            media.poster || media.image || media.cover,
+            domain
+          );
+          if (image) {
+            console.log(`[enrichSearchResultsWithImages] Found image for "${anime.title}": ${image}`);
+            return {
+              ...anime,
+              image,
+              backdrop: resolveAbsoluteUrl(media.backdrop || media.banner, domain),
+            };
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[enrichSearchResultsWithImages] Error fetching info for "${anime.title}":`, err.message);
+    }
+    return anime;
+  });
+
+  try {
+    const enriched = await Promise.allSettled(enrichedPromises);
+    const enrichedResults = enriched
+      .map((r) => (r.status === 'fulfilled' ? r.value : null))
+      .filter(Boolean);
+
+    // Combinar: primero los enriquecidos, luego los que no se pudieron enriquecer
+    const enrichedTitles = new Set(enrichedResults.map(a => a.url));
+    const remainingResults = results.filter(a => !enrichedTitles.has(a.url));
+    
+    return [...enrichedResults, ...remainingResults];
+  } catch (err) {
+    console.error('[enrichSearchResultsWithImages] Error:', err.message);
+    return results;
+  }
+}
+
 async function searchAnime(query, domainCandidate) {
   const cleanQuery = (query || "").toString().trim();
   if (!cleanQuery) {
@@ -901,6 +969,11 @@ async function searchAnime(query, domainCandidate) {
     if (bestResults.length >= 5) {
       break;
     }
+  }
+
+  // Enriquecer resultados con imágenes
+  if (bestResults.length > 0) {
+    bestResults = await enrichSearchResultsWithImages(bestResults, domain);
   }
 
   return {
