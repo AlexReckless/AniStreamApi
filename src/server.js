@@ -6,6 +6,8 @@ const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const animeRoutes = require("./routes/anime.routes");
+const moviesRoutes = require("./routes/movies.routes");
+const mangaRoutes = require("./routes/manga.routes");
 const downloadService = require("./services/download.service");
 const { ApiError } = require("./utils/api-error");
 
@@ -41,6 +43,8 @@ app.get("/", (_req, res) => {
     endpoints: {
       modern: ["/api/v1/anime/search", "/api/v1/anime/info", "/api/v1/anime/episode"],
       legacy: ["/api/anime1v/search", "/api/anime1v/info", "/api/anime1v/episode"],
+      movies: ["/api/v1/movies/search", "/api/v1/movies/catalog", "/api/v1/movies/info", "/api/v1/movies/servers", "/api/v1/movies/resolve"],
+      manga: ["/api/v1/manga/sources", "/api/v1/manga/search", "/api/v1/manga/catalog", "/api/v1/manga/manga/:source/*", "/api/v1/manga/chapter/:source/*"],
     },
   });
 });
@@ -51,6 +55,8 @@ app.get("/health", (_req, res) => {
 
 app.use("/api/v1/anime", animeRoutes);
 app.use("/api/anime1v", animeRoutes);
+app.use("/api/v1/movies", moviesRoutes);
+app.use("/api/v1/manga", mangaRoutes);
 
 app.use((_req, _res, next) => {
   next(new ApiError(404, "Endpoint no encontrado"));
@@ -69,6 +75,15 @@ app.use((error, _req, res, _next) => {
   }
 
   res.status(statusCode).json(response);
+});
+
+const ytdlpResolver = require("./services/movies/resolvers/ytdlp.resolver");
+ytdlpResolver.checkYtdlpAvailability().then(() => {
+  if (ytdlpResolver.isAvailable) {
+    console.log("[SYSTEM] yt-dlp detectado. Se usara como resolvedor primario para movies.");
+  } else {
+    console.log("[SYSTEM] yt-dlp no disponible. Movies usara Puppeteer como fallback.");
+  }
 });
 
 app.listen(port, () => {

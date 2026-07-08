@@ -113,15 +113,23 @@ function parseEpisodeListFromHtml(html) {
   }
 }
 
+// La sinopsis de TioAnime a veces viene con entidades HTML sin decodificar
+// (ej. "est&aacute;" en vez de "está"); reparsearla como HTML las resuelve.
+function decodeHtmlEntities(text) {
+  if (!text) return text;
+  return cheerio.load(`<div>${text}</div>`)("div").text();
+}
+
 function parseAnimeInfoFromHtml(html) {
   const $ = cheerio.load(html);
 
   const title = $("h1.title").first().text().trim() || $("h1").first().text().trim() || null;
-  const description =
+  const description = decodeHtmlEntities(
     $("p.sinopsis").first().text().trim() ||
-    $(".description").first().text().trim() ||
-    $("meta[name='description']").attr("content") ||
-    null;
+      $(".description").first().text().trim() ||
+      $("meta[name='description']").attr("content") ||
+      null
+  );
 
   if (description && description.startsWith("ver online")) {
     return { title, description: null, genres: [], type: null };
@@ -160,7 +168,9 @@ async function searchAnime(query, domainCandidate) {
   }
 
   const domain = (domainCandidate || DEFAULT_DOMAIN).toString().trim();
-  const searchUrl = `https://${domain}/directorio?search=${encodeURIComponent(cleanQuery)}`;
+  // TioAnime renombro el parametro de busqueda de "search" a "q"; con el nombre
+  // viejo el sitio ignora el termino y devuelve siempre el mismo listado generico.
+  const searchUrl = `https://${domain}/directorio?q=${encodeURIComponent(cleanQuery)}`;
   const html = await fetchHtml(searchUrl);
 
   const $ = cheerio.load(html);

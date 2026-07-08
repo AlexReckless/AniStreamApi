@@ -26,9 +26,9 @@ const SERVER_PATTERNS = [
 const VIDEO_URL_REGEX =
   /https?:\/\/(?:www\.)?(?:pixeldrain\.com|mega\.nz|mp4upload\.com|1fichier\.com|player\.[^\s"'<>]+|[^\s"'<>]*zilla[^\s"'<>]*|[^\s"'<>]*uns\.bio[^\s"'<>]*)[^\s"'<>]*/gi;
 
-async function fetchHtml(url) {
+async function fetchHtml(url, timeoutOverrideMs) {
   try {
-    const timeout = Number(process.env.REQUEST_TIMEOUT_MS || 15000);
+    const timeout = timeoutOverrideMs ?? Number(process.env.REQUEST_TIMEOUT_MS || 15000);
     const response = await axios.get(url, {
       timeout,
       headers: HTTP_HEADERS,
@@ -38,6 +38,35 @@ async function fetchHtml(url) {
     return response.data;
   } catch (error) {
     throw new ApiError(500, "No se pudo obtener contenido desde AnimeAV1", error.message);
+  }
+}
+
+function extractOgImage(html, domain) {
+  try {
+    const $ = cheerio.load(html);
+    const content =
+      $('meta[property="og:image"]').attr("content") ||
+      $('meta[name="twitter:image"]').attr("content") ||
+      null;
+    return resolveAbsoluteUrl(content, domain);
+  } catch (_error) {
+    return null;
+  }
+}
+
+// Ultimo fallback: AnimeAV1 no siempre expone el poster en meta tags ni en el JSON
+// embebido, pero la pagina de detalle SIEMPRE renderiza <img class="aspect-poster">
+// con la portada real (confirmado tanto en peliculas como en series).
+function extractDetailPagePoster(html, domain) {
+  try {
+    const $ = cheerio.load(html);
+    const src =
+      $("img.aspect-poster").first().attr("src") ||
+      $('img[alt$="Poster"]').first().attr("src") ||
+      null;
+    return resolveAbsoluteUrl(src, domain);
+  } catch (_error) {
+    return null;
   }
 }
 
@@ -872,58 +901,71 @@ async function getAnimeInfo(urlCandidate) {
   };
 }
 
-async function enrichSearchResultsWithImages(results, domain, maxToEnrich = 10) {
+const ENRICH_FETCH_TIMEOUT_MS = Number(process.env.ENRICH_IMAGE_TIMEOUT_MS || 6000);
+
+async function enrichSearchResultsWithImages(results, domain) {
   if (!results || results.length === 0) {
     return results;
   }
 
-  // Limitar a los primeros N resultados para no hacer demasiadas llamadas
-  const toEnrich = results.slice(0, maxToEnrich);
-  
-  // Hacer fetch de info en paralelo para cada uno
-  const enrichedPromises = toEnrich.map(async (anime) => {
-    try {
-      const html = await fetchHtml(anime.url);
-      const svelteData = extractSvelteData(html);
-      
-      if (svelteData) {
-        const media = chooseBestMediaCandidate(svelteData);
-        if (media) {
-          const image = resolveAbsoluteUrl(
-            media.poster || media.image || media.cover,
-            domain
-          );
-          if (image) {
-            console.log(`[enrichSearchResultsWithImages] Found image for "${anime.title}": ${image}`);
-            return {
-              ...anime,
-              image,
-              backdrop: resolveAbsoluteUrl(media.backdrop || media.banner, domain),
-            };
-          }
-        }
-      }
-    } catch (err) {
-      console.error(`[enrichSearchResultsWithImages] Error fetching info for "${anime.title}":`, err.message);
-    }
-    return anime;
-  });
-
-  try {
-    const enriched = await Promise.allSettled(enrichedPromises);
-    const enrichedResults = enriched
-      .map((r) => (r.status === 'fulfilled' ? r.value : null))
-      .filter(Boolean);
-
-    // Combinar: primero los enriquecidos, luego los que no se pudieron enriquecer
-    const enrichedTitles = new Set(enrichedResults.map(a => a.url));
-    const remainingResults = results.filter(a => !enrichedTitles.has(a.url));
-    
-    return [...enrichedResults, ...remainingResults];
-  } catch (err) {
-    console.error('[enrichSearchResultsWithImages] Error:', err.message);
+  // Solo hace falta pedir la pagina de detalle de los que todavia no tienen imagen
+  // (antes se re-pedian tambien los primeros 10 aunque ya tuvieran poster, desperdiciando
+  // requests que podian usarse en completar el resto de la lista).
+  const missingImage = results.filter((anime) => !anime.image);
+  if (missingImage.length === 0) {
     return results;
   }
+
+  const enrichedByUrl = new Map();
+
+  await Promise.allSettled(
+    missingImage.map(async (anime) => {
+      try {
+        // Timeout mas corto que el del buscador: esto es un "nice to have", una pagina
+        // lenta no debe frenar toda la respuesta de busqueda.
+        const html = await fetchHtml(anime.url, ENRICH_FETCH_TIMEOUT_MS);
+        const svelteData = extractSvelteData(html);
+
+        let image = null;
+        let backdrop = null;
+
+        if (svelteData) {
+          const media = chooseBestMediaCandidate(svelteData);
+          if (media) {
+            image = resolveAbsoluteUrl(media.poster || media.image || media.cover, domain);
+            backdrop = resolveAbsoluteUrl(media.backdrop || media.banner, domain);
+          }
+        }
+
+        // Segundo fallback: si ni el JSON de la pagina de detalle trae poster,
+        // probamos con los metadatos og:image/twitter:image del <head>.
+        if (!image) {
+          image = extractOgImage(html, domain);
+        }
+
+        // Tercer fallback: el <img class="aspect-poster"> que la pagina siempre renderiza.
+        if (!image) {
+          image = extractDetailPagePoster(html, domain);
+        }
+
+        if (image) {
+          enrichedByUrl.set(anime.url, { image, backdrop });
+        }
+      } catch (err) {
+        console.error(`[enrichSearchResultsWithImages] Error fetching info for "${anime.title}":`, err.message);
+      }
+    })
+  );
+
+  if (enrichedByUrl.size === 0) {
+    return results;
+  }
+
+  // Mantiene el orden de relevancia original devuelto por el sitio.
+  return results.map((anime) => {
+    const found = enrichedByUrl.get(anime.url);
+    return found ? { ...anime, ...found } : anime;
+  });
 }
 
 async function searchAnime(query, domainCandidate) {
