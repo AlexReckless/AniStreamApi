@@ -217,6 +217,5 @@ function createTmoService(baseUrl, librarySegment) {
 }
 
 module.exports = {
-  zonatmo: createTmoService("https://zonatmo.org", "manga"),
   tmohentai: createTmoService("https://tmohentai.app", "hentai"),
 };

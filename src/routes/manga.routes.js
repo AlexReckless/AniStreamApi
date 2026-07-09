@@ -1,10 +1,10 @@
 const express = require("express");
-const axios = require("axios");
 const { requireApiKey } = require("../middlewares/auth");
 const { dailyRateLimit } = require("../middlewares/rate-limit");
-const { zonatmo, tmohentai } = require("../services/manga/tmo.service");
+const { tmohentai } = require("../services/manga/tmo.service");
 const simplyhentai = require("../services/manga/simplyhentai.service");
-const kingcomix = require("../services/manga/kingcomix.service");
+const olympus = require("../services/manga/olympus.service");
+const ehentai = require("../services/manga/ehentai.service");
 const { ApiError } = require("../utils/api-error");
 
 const router = express.Router();
@@ -19,13 +19,15 @@ function asyncHandler(handler) {
   };
 }
 
-// El id nsfw:true es lo que el front usa para esconder ZonaTMO... (esconder TMOHentai/
-// Simply Hentai) detras del gesto de 5 clicks en el logo, igual que "Hentaila" en anime.
+// El id nsfw:true es lo que el front usa para esconder TMOHentai/Simply Hentai/
+// E-Hentai detras del gesto de 5 clicks en el logo, igual que "Hentaila" en anime.
+// ZonaTMO y KingComix se reemplazaron por Olympus y E-Hentai: ambos bloqueaban
+// con 403 la IP de Render (Cloudflare), estos dos no.
 const SOURCES = {
-  zonatmo: { name: "ZonaTMO", nsfw: false, service: zonatmo },
+  olympus: { name: "Olympus Scanlation", nsfw: false, service: olympus },
   tmohentai: { name: "TMOHentai", nsfw: true, service: tmohentai },
   simplyhentai: { name: "Simply Hentai", nsfw: true, service: simplyhentai },
-  kingcomix: { name: "KingComix", nsfw: true, service: kingcomix },
+  ehentai: { name: "E-Hentai", nsfw: true, service: ehentai },
 };
 
 function getSource(sourceId) {
@@ -37,34 +39,6 @@ function getSource(sourceId) {
 }
 
 router.use(requireApiKey, dailyRateLimit);
-
-// TEMPORAL: para diagnosticar bloqueos de IP contra candidatos de fuentes nuevas.
-// Sacar despues de terminar de elegir reemplazos para ZonaTMO/KingComix.
-router.get(
-  "/debug-fetch",
-  asyncHandler(async (req, res) => {
-    const urls = String(req.query.urls || "").split(",").filter(Boolean);
-    const results = await Promise.all(
-      urls.map(async (url) => {
-        try {
-          const r = await axios.get(url, {
-            timeout: 10000,
-            maxRedirects: 5,
-            headers: {
-              "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            },
-            validateStatus: () => true,
-          });
-          return { url, status: r.status, length: (r.data || "").length };
-        } catch (error) {
-          return { url, error: error.message };
-        }
-      })
-    );
-    res.json({ results });
-  })
-);
 
 router.get("/sources", (_req, res) => {
   res.status(200).json({
