@@ -1,4 +1,5 @@
 const express = require("express");
+const axios = require("axios");
 const { requireApiKey } = require("../middlewares/auth");
 const { dailyRateLimit } = require("../middlewares/rate-limit");
 const { zonatmo, tmohentai } = require("../services/manga/tmo.service");
@@ -36,6 +37,34 @@ function getSource(sourceId) {
 }
 
 router.use(requireApiKey, dailyRateLimit);
+
+// TEMPORAL: para diagnosticar bloqueos de IP contra candidatos de fuentes nuevas.
+// Sacar despues de terminar de elegir reemplazos para ZonaTMO/KingComix.
+router.get(
+  "/debug-fetch",
+  asyncHandler(async (req, res) => {
+    const urls = String(req.query.urls || "").split(",").filter(Boolean);
+    const results = await Promise.all(
+      urls.map(async (url) => {
+        try {
+          const r = await axios.get(url, {
+            timeout: 10000,
+            maxRedirects: 5,
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            },
+            validateStatus: () => true,
+          });
+          return { url, status: r.status, length: (r.data || "").length };
+        } catch (error) {
+          return { url, error: error.message };
+        }
+      })
+    );
+    res.json({ results });
+  })
+);
 
 router.get("/sources", (_req, res) => {
   res.status(200).json({
