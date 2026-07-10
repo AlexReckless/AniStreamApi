@@ -1,4 +1,4 @@
-// Singleton de Puppeteer para el modulo de peliculas/series (aislado del puppeteer local de animeflv.service.js)
+// Singleton de Puppeteer para el modulo de peliculas/series (aislado de los servicios de anime)
 const puppeteer = require("puppeteer");
 
 let browserInstance = null;

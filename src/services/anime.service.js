@@ -1,10 +1,7 @@
 const { URL } = require("node:url");
 const { ApiError } = require("../utils/api-error");
 const animeav1Service = require("./animeav1.service");
-const jkanimeService = require("./jkanime.service");
-const animeflvService = require("./animeflv.service");
 const hentailaService = require("./hentaila.service");
-const tioanimeService = require("./tioanime.service");
 const monoschinosService = require("./monoschinos.service");
 
 const DEFAULT_ANIME_DOMAIN = process.env.DEFAULT_ANIME_DOMAIN || "animeav1.com";
@@ -17,28 +14,10 @@ const PROVIDERS = [
     service: animeav1Service,
   },
   {
-    id: "jkanime",
-    label: "JKAnime",
-    domains: ["jkanime.net", "www.jkanime.net"],
-    service: jkanimeService,
-  },
-  {
-    id: "animeflv",
-    label: "AnimeFLV",
-    domains: ["animeflv.net", "www.animeflv.net", "www4.animeflv.net"],
-    service: animeflvService,
-  },
-  {
     id: "hentaila",
     label: "HentaiLA",
     domains: ["hentaila.com", "www.hentaila.com"],
     service: hentailaService,
-  },
-  {
-    id: "tioanime",
-    label: "TioAnime",
-    domains: ["tioanime.com", "www.tioanime.com"],
-    service: tioanimeService,
   },
   {
     id: "monoschinos",
@@ -113,60 +92,11 @@ function findProviderForUrl(urlCandidate) {
   }
 }
 
-// Buscar imagen en otros proveedores si animeav1 no la tiene
+// Antes buscaba imagenes faltantes en tioanime/jkanime como fallback; ya no
+// quedan otros proveedores de anime compatibles para eso (solo animeav1 y
+// hentaila), asi que esto pasa a ser un no-op.
 async function enrichAnimeav1WithImageFallback(results) {
-  const needsImage = results.filter(r => !r.image);
-  
-  if (needsImage.length === 0) {
-    return results;
-  }
-
-  console.log(`[enrichAnimeav1WithImageFallback] ${needsImage.length} animes sin imagen, buscando en otros proveedores...`);
-
-  // Intentar obtener imágenes de tioanime y jkanime
-  const fallbackProviders = [
-    { id: "tioanime", service: tioanimeService },
-    { id: "jkanime", service: jkanimeService },
-  ];
-
-  const enrichedResults = await Promise.all(
-    needsImage.map(async (anime) => {
-      // Si ya tiene imagen, devolver como está
-      if (anime.image) {
-        return anime;
-      }
-
-      // Intentar buscar en proveedores de fallback
-      for (const fallback of fallbackProviders) {
-        try {
-          const fallbackResults = await fallback.service.searchAnime(anime.title, fallback.id === "tioanime" ? "tioanime.com" : "jkanime.net");
-          
-          if (fallbackResults && fallbackResults.data && Array.isArray(fallbackResults.data.results)) {
-            const match = fallbackResults.data.results.find(r =>
-              (r.title || "").toLowerCase().includes(anime.title.toLowerCase()) ||
-              (anime.title || "").toLowerCase().includes((r.title || "").toLowerCase())
-            );
-
-            if (match && match.image) {
-              console.log(`[enrichAnimeav1WithImageFallback] Encontrada imagen para "${anime.title}" en ${fallback.id}`);
-              return {
-                ...anime,
-                image: match.image,
-                backdrop: match.backdrop || anime.backdrop,
-              };
-            }
-          }
-        } catch (err) {
-          console.error(`[enrichAnimeav1WithImageFallback] Error buscando "${anime.title}" en ${fallback.id}:`, err.message);
-        }
-      }
-
-      return anime;
-    })
-  );
-
-  // Reemplazar resultados enriquecidos
-  return results.map(r => enrichedResults.find(e => e.url === r.url) || r);
+  return results;
 }
 
 async function searchAnime(query, domainCandidate) {
