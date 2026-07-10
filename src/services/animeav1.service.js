@@ -1029,6 +1029,55 @@ async function searchAnime(query, domainCandidate) {
   };
 }
 
+// Navega el catalogo real de AnimeAV1 (https://animeav1.com/catalogo) filtrado
+// por genero, letra inicial y/o estado ("emision", "finalizado", etc.), en vez
+// de una busqueda de texto libre como searchAnime. Reusa el mismo pipeline de
+// parseo (JSON embebido de SvelteKit, con fallback a HTML).
+async function getCatalog({ genre, letter, status, page, domainCandidate } = {}) {
+  const domain = (domainCandidate || DEFAULT_DOMAIN || "animeav1.com").toString().trim();
+
+  const params = new URLSearchParams();
+  if (genre) params.set("genre", genre);
+  if (letter) params.set("letter", letter);
+  if (status) params.set("status", status);
+  const pageNumber = parseNumber(page);
+  if (pageNumber && pageNumber > 1) params.set("page", String(pageNumber));
+
+  const query = params.toString();
+  const catalogUrl = `https://${domain}/catalogo${query ? `?${query}` : ""}`;
+  const html = await fetchHtml(catalogUrl);
+
+  let results = [];
+  const svelteData = extractSvelteData(html);
+  if (svelteData) {
+    const bestArray = chooseLikelySearchArray(svelteData);
+    if (bestArray) {
+      results = mapSearchResults(bestArray, domain);
+    }
+  }
+
+  if (results.length === 0) {
+    results = parseSearchResultsFromHtml(html, domain);
+  }
+
+  if (results.length > 0) {
+    results = await enrichSearchResultsWithImages(results, domain);
+  }
+
+  return {
+    success: true,
+    data: {
+      genre: genre || null,
+      letter: letter || null,
+      status: status || null,
+      page: pageNumber || 1,
+      results,
+      count: results.length,
+    },
+    source: svelteData ? "json" : "html",
+  };
+}
+
 async function getEpisodeLinks(urlCandidate, includeMegaRaw, excludeServersRaw) {
   const normalizedUrl = normalizeInputUrl(urlCandidate);
   const domain = detectDomain(normalizedUrl);
@@ -1083,4 +1132,5 @@ module.exports = {
   searchAnime,
   getAnimeInfo,
   getEpisodeLinks,
+  getCatalog,
 };

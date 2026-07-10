@@ -40,6 +40,20 @@ router.get(
 );
 
 router.get(
+  "/catalog",
+  asyncHandler(async (req, res) => {
+    const response = await animeService.getCatalog({
+      genre: req.query.genre,
+      letter: req.query.letter,
+      status: req.query.status,
+      page: req.query.page,
+      domain: req.query.domain,
+    });
+    res.status(200).json(response);
+  })
+);
+
+router.get(
   "/episode",
   asyncHandler(async (req, res) => {
     if (!req.query.url) {

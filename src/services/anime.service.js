@@ -171,6 +171,22 @@ async function getAnimeInfo(urlCandidate) {
   };
 }
 
+// El catalogo por genero/letra/estado es especifico de AnimeAV1 (el filtro
+// que expone su propia web) -- por ahora no hay equivalente para los demas
+// proveedores.
+async function getCatalog({ genre, letter, status, page, domain: domainCandidate } = {}) {
+  const provider = findProviderByDomain(domainCandidate) || findProviderById("animeav1");
+  if (!provider || provider.id !== "animeav1") {
+    throw new ApiError(400, "El catálogo por filtros solo está disponible para AnimeAV1");
+  }
+
+  const result = await provider.service.getCatalog({ genre, letter, status, page, domainCandidate: provider.domains[0] });
+  return {
+    ...result,
+    source: result?.source || provider.id,
+  };
+}
+
 async function getEpisodeLinks(urlCandidate, includeMega, excludeServers) {
   const provider = findProviderForUrl(urlCandidate) || PROVIDERS[0];
   if (!provider) {
@@ -188,4 +204,5 @@ module.exports = {
   searchAnime,
   getAnimeInfo,
   getEpisodeLinks,
+  getCatalog,
 };
