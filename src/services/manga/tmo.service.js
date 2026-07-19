@@ -97,8 +97,28 @@ function createTmoService(baseUrl, librarySegment) {
     return parseLibraryResults(html);
   }
 
-  async function getCatalog(page = 1) {
-    const url = `${baseUrl}/biblioteca?page=${Number(page) || 1}`;
+  // options.tagIds: IDs numericos de genero (ver /biblioteca -> checkboxes
+  // "tags[]"). options.sort: 'az' | 'za' para orden alfabetico; cualquier
+  // otro valor (o ninguno) deja el orden por defecto del sitio (populares).
+  // Verificado en vivo contra tmohentai.app: filtrar por tags[] SI cambia el
+  // set de resultados (probado con Ahegao: 4563 -> 1788, distinto primer
+  // resultado), y usa la misma plantilla "moderna" que ya parsea parseModernCards.
+  async function getCatalog(page = 1, options = {}) {
+    const { tagIds = [], sort = null } = options;
+    const params = new URLSearchParams();
+    params.set("page", String(Number(page) || 1));
+    for (const id of tagIds) {
+      const numId = Number(id);
+      if (Number.isFinite(numId)) params.append("tags[]", String(numId));
+    }
+    if (sort === "az") {
+      params.set("order_item", "alphabetically");
+      params.set("order_dir", "asc");
+    } else if (sort === "za") {
+      params.set("order_item", "alphabetically");
+      params.set("order_dir", "desc");
+    }
+    const url = `${baseUrl}/biblioteca?${params.toString()}`;
     const html = await fetchHtml(url);
     return parseLibraryResults(html);
   }

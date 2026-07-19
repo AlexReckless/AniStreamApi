@@ -56,8 +56,7 @@ function mapAlbumSummary(album) {
   };
 }
 
-async function getCollection(page = 1) {
-  const pageNum = Number(page) || 1;
+async function fetchCollectionPage(pageNum) {
   const url = pageNum <= 1 ? `${BASE_URL}${COLLECTION_PATH}` : `${BASE_URL}${COLLECTION_PATH}/page-${pageNum}`;
   const html = await fetchHtml(url);
   const nextData = extractNextData(html);
@@ -68,6 +67,66 @@ async function getCollection(page = 1) {
     items: albums.map(mapAlbumSummary).filter((a) => a.path),
     hasNextPage: Boolean(pagination?.next),
   };
+}
+
+// El sitio no tiene ningun parametro de orden para /collection/{slug} (se
+// probaron sort=/order=/sortBy= en vivo y ninguno cambia el resultado -- el
+// orden viene fijo por como se armo la coleccion). La unica forma real de
+// ordenar A-Z es traer toda la coleccion una vez y ordenarla nosotros; se
+// cachea en memoria porque son 29 paginas (~679 items) y no tiene sentido
+// volver a pedirlas en cada request.
+const SORT_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
+const SORT_PAGE_SIZE = 24; // mismo per_page que ya trae la paginacion del sitio
+let sortedCache = null; // { items, fetchedAt }
+let sortedCachePromise = null;
+
+async function fetchAllAlbumsForSort() {
+  const all = [];
+  let pageNum = 1;
+  // Tope de seguridad: la coleccion tiene ~29 paginas hoy: 60 da margen sin
+  // arriesgarse a un loop infinito si el sitio cambia de forma inesperada.
+  const MAX_PAGES = 60;
+  while (pageNum <= MAX_PAGES) {
+    const { items, hasNextPage } = await fetchCollectionPage(pageNum);
+    all.push(...items);
+    if (!hasNextPage) break;
+    pageNum += 1;
+  }
+  all.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
+  return all;
+}
+
+async function getSortedAlbums() {
+  const isFresh = sortedCache && Date.now() - sortedCache.fetchedAt < SORT_CACHE_TTL_MS;
+  if (isFresh) return sortedCache.items;
+
+  if (!sortedCachePromise) {
+    sortedCachePromise = fetchAllAlbumsForSort()
+      .then((items) => {
+        sortedCache = { items, fetchedAt: Date.now() };
+        return items;
+      })
+      .finally(() => {
+        sortedCachePromise = null;
+      });
+  }
+  return sortedCachePromise;
+}
+
+// options.sort: 'az' | 'za' para orden alfabetico (con cache, ver arriba);
+// cualquier otro valor deja el orden por defecto de la coleccion.
+async function getCollection(page = 1, options = {}) {
+  const pageNum = Number(page) || 1;
+  const { sort = null } = options;
+
+  if (sort === "az" || sort === "za") {
+    const sorted = sort === "za" ? [...(await getSortedAlbums())].reverse() : await getSortedAlbums();
+    const start = (pageNum - 1) * SORT_PAGE_SIZE;
+    const items = sorted.slice(start, start + SORT_PAGE_SIZE);
+    return { items, hasNextPage: start + SORT_PAGE_SIZE < sorted.length };
+  }
+
+  return fetchCollectionPage(pageNum);
 }
 
 // Simply Hentai resuelve la busqueda por JS del lado del cliente (no viene en el
@@ -156,6 +215,11 @@ async function getChapterPages(uploadId) {
 
   return { uploadId: cleanPath, pages, title: data.title || "" };
 }
+
+// Precalienta el cache de orden alfabetico al arrancar el proceso (o al
+// despertar tras dormirse en Render), asi el primer usuario que pida
+// sort=az/za no es quien paga el costo de recorrer las 29 paginas en vivo.
+getSortedAlbums().catch(() => {});
 
 module.exports = {
   searchContent,

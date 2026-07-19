@@ -6,6 +6,7 @@ const simplyhentai = require("../services/manga/simplyhentai.service");
 const olympus = require("../services/manga/olympus.service");
 const ehentai = require("../services/manga/ehentai.service");
 const infinitymanga = require("../services/manga/infinitymanga.service");
+const mangaoni = require("../services/manga/mangaoni.service");
 const { ApiError } = require("../utils/api-error");
 
 const router = express.Router();
@@ -27,6 +28,7 @@ function asyncHandler(handler) {
 const SOURCES = {
   olympus: { name: "Olympus Scanlation", nsfw: false, service: olympus },
   infinitymanga: { name: "InfinityManga", nsfw: false, service: infinitymanga },
+  mangaoni: { name: "MangaOni", nsfw: false, service: mangaoni },
   tmohentai: { name: "TMOHentai", nsfw: true, service: tmohentai },
   simplyhentai: { name: "Simply Hentai", nsfw: true, service: simplyhentai },
   ehentai: { name: "E-Hentai", nsfw: true, service: ehentai },
@@ -62,6 +64,8 @@ router.get(
   })
 );
 
+const VALID_SORTS = new Set(["az", "za"]);
+
 router.get(
   "/catalog",
   asyncHandler(async (req, res) => {
@@ -69,8 +73,20 @@ router.get(
     const page = Number(req.query.page || 1);
     const { service } = getSource(source);
 
+    // genres/sort solo los usan tmohentai (genres+sort) y simplyhentai (solo
+    // sort) por ahora -- las demas fuentes no declaran un segundo parametro
+    // en getCatalog/getCollection, asi que este objeto simplemente lo ignoran.
+    const sort = VALID_SORTS.has(req.query.sort) ? req.query.sort : null;
+    const genres = String(req.query.genres || "")
+      .split(",")
+      .map((id) => Number(id.trim()))
+      .filter((id) => Number.isFinite(id));
+    const options = { sort, tagIds: genres };
+
     // zonatmo/tmohentai devuelven un array plano; simplyhentai ya devuelve {items, hasNextPage}.
-    const raw = service.getCatalog ? await service.getCatalog(page) : await service.getCollection(page);
+    const raw = service.getCatalog
+      ? await service.getCatalog(page, options)
+      : await service.getCollection(page, options);
     const data = Array.isArray(raw) ? { items: raw, hasNextPage: raw.length > 0 } : raw;
 
     res.status(200).json({ success: true, data, source });
