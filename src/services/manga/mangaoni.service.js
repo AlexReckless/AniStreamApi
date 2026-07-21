@@ -41,6 +41,64 @@ function parseTipoSlugFromUrl(url) {
   return { tipo: tipo.toLowerCase(), slug };
 }
 
+// ════════════════════════════════════════════════════════════
+// Construccion de URLs (puro, sin red) -- lo usa tanto el fetch
+// server-side de mas abajo como el endpoint /mangaoni/fetch-url,
+// que le dice al celular que URL pedir el cuando Render esta bloqueado.
+// ════════════════════════════════════════════════════════════
+function buildCatalogUrl(page = 1, options = {}) {
+  const { tagIds = [], sort = null } = options;
+  const params = new URLSearchParams();
+  const pageNum = Number(page) || 1;
+  if (pageNum > 1) params.set("p", String(pageNum));
+
+  const generoId = Number(tagIds[0]);
+  if (Number.isFinite(generoId)) params.set("genero", String(generoId));
+
+  // Siempre adulto=0 (mismo default del propio sitio) para que esta fuente
+  // se mantenga fuera del contenido +18 -- se registra como nsfw:false.
+  params.set("adulto", "0");
+
+  if (sort === "az") {
+    params.set("filtro", "nombre");
+    params.set("orden", "asc");
+  } else if (sort === "za") {
+    params.set("filtro", "nombre");
+    params.set("orden", "desc");
+  }
+
+  return `${BASE_URL}/directorio?${params.toString()}`;
+}
+
+function buildSearchUrl(query) {
+  if (!query) {
+    throw new ApiError(400, "El parametro de busqueda 'q' es requerido");
+  }
+  // /buscar (sin slash, param "s") solo redirige al home -- es el buscador
+  // "en vivo" (dropdown, JS). El endpoint real de resultados es /buscar/?q=.
+  return `${BASE_URL}/buscar/?q=${encodeURIComponent(query)}`;
+}
+
+function buildInfoUrl(tipo, slug) {
+  if (!tipo || !slug || !TIPOS_VALIDOS.includes(tipo)) {
+    throw new ApiError(400, "Se requiere 'tipo/slug' del manga (ej: manga/one-piece)");
+  }
+  return `${BASE_URL}/${tipo}/${slug}/`;
+}
+
+function buildChapterUrl(slug, chapterId) {
+  if (!slug || !chapterId) {
+    throw new ApiError(400, "Se requiere 'slug' y 'chapterId' del capitulo");
+  }
+  return `${BASE_URL}/lector/${slug}/${chapterId}/cascada/`;
+}
+
+// ════════════════════════════════════════════════════════════
+// Parseo (puro, sin red) -- reutilizable tanto si el HTML lo trajo
+// axios (fetchHtml de aca abajo) como si lo trajo la app desde el
+// celular del usuario (endpoint /mangaoni/parse).
+// ════════════════════════════════════════════════════════════
+
 // Cada carta de listado (directorio o busqueda, mismo template en ambas) es
 // un <a itemprop="url" href=".../{tipo}/{slug}/"> que contiene un
 // <img itemprop="image" alt="Titulo" data-src="portada"> (lazy-load real via
@@ -50,7 +108,7 @@ function parseTipoSlugFromUrl(url) {
 // "id" se guarda como el tipo (no un id numerico) porque el resto de la app
 // arma mangaPath como `${item.id}/${item.slug}`, y para esta fuente esa ruta
 // tiene que ser literalmente "{tipo}/{slug}" (asi es la URL real del sitio).
-function parseCards(html) {
+function parseCatalogHtml(html) {
   const $ = cheerio.load(html);
   const items = [];
   const seen = new Set();
@@ -93,54 +151,9 @@ function parseCards(html) {
   return { items, hasNextPage };
 }
 
-async function searchContent(query) {
-  if (!query) {
-    throw new ApiError(400, "El parametro de busqueda 'q' es requerido");
-  }
-  // /buscar (sin slash, param "s") solo redirige al home -- es el buscador
-  // "en vivo" (dropdown, JS). El endpoint real de resultados es /buscar/?q=.
-  const html = await fetchHtml(`${BASE_URL}/buscar/?q=${encodeURIComponent(query)}`);
-  return parseCards(html).items;
-}
-
-// options.tagIds: aca representa UN solo genero (el sitio usa un <select>
-// de una sola opcion, no checkboxes multiples como tmohentai) -- si mandan
-// varios, se usa el primero. options.sort: 'az' | 'za'.
-// Siempre se manda adulto=0 (mismo default del propio sitio) para que esta
-// fuente se mantenga fuera del contenido +18 -- se registra como nsfw:false.
-async function getCatalog(page = 1, options = {}) {
-  const { tagIds = [], sort = null } = options;
-  const params = new URLSearchParams();
-  const pageNum = Number(page) || 1;
-  if (pageNum > 1) params.set("p", String(pageNum));
-
-  const generoId = Number(tagIds[0]);
-  if (Number.isFinite(generoId)) params.set("genero", String(generoId));
-
-  params.set("adulto", "0");
-
-  if (sort === "az") {
-    params.set("filtro", "nombre");
-    params.set("orden", "asc");
-  } else if (sort === "za") {
-    params.set("filtro", "nombre");
-    params.set("orden", "desc");
-  }
-
-  const html = await fetchHtml(`${BASE_URL}/directorio?${params.toString()}`);
-  return parseCards(html);
-}
-
-// mangaPath tiene la forma "{tipo}/{slug}" (asi la arma parseCards de arriba
-// y asi la pasa la ruta /manga/:source/*).
-async function getMangaInfo(mangaPath) {
-  const [tipo, slug] = String(mangaPath || "").split("/").filter(Boolean);
-  if (!tipo || !slug || !TIPOS_VALIDOS.includes(tipo)) {
-    throw new ApiError(400, "Se requiere el path 'tipo/slug' del manga (ej: manga/one-piece)");
-  }
-
-  const url = `${BASE_URL}/${tipo}/${slug}/`;
-  const html = await fetchHtml(url);
+// mangaPath tiene la forma "{tipo}/{slug}" (asi la arma parseCatalogHtml de
+// arriba y asi la pasa la ruta /manga/:source/*).
+function parseInfoHtml(html, tipo, slug) {
   const $ = cheerio.load(html);
 
   const title = $(".post-title").first().text().trim() || $("h1").first().text().trim();
@@ -208,26 +221,19 @@ async function getMangaInfo(mangaPath) {
     estado,
     ranking,
     chapters,
-    url,
+    url: buildInfoUrl(tipo, slug),
     source: "mangaoni",
   };
 }
 
-// uploadId tiene la forma "{slug}/{chapterId}" (ver comentario en getMangaInfo).
+// uploadId tiene la forma "{slug}/{chapterId}" (ver comentario en parseInfoHtml).
 //
 // Las imagenes NO vienen como <img src="..."> en el HTML: la pagina del
 // lector (modo "cascada") trae un <script>var unicap = 'BASE64';</script>
 // que al decodificar en base64 da: "{baseUrl}||{JSON array de nombres}||".
 // Verificado en vivo decodificando un capitulo real de One Piece.
-async function getChapterPages(uploadId) {
+function parseChapterHtml(html, uploadId) {
   const cleanPath = String(uploadId || "").replace(/^\/+/, "");
-  const [slug, chapterId] = cleanPath.split("/").filter(Boolean);
-  if (!slug || !chapterId) {
-    throw new ApiError(400, "uploadId invalido (se espera 'slug/chapterId')");
-  }
-
-  const url = `${BASE_URL}/lector/${slug}/${chapterId}/cascada/`;
-  const html = await fetchHtml(url);
 
   const match = html.match(/var\s+unicap\s*=\s*'([^']+)'/);
   if (!match) {
@@ -266,9 +272,50 @@ async function getChapterPages(uploadId) {
   return { uploadId: cleanPath, pages, title };
 }
 
+// ════════════════════════════════════════════════════════════
+// Fetch server-side (build + fetchHtml + parse) -- interfaz que
+// espera el dispatcher generico de manga.routes.js (getSource().service).
+// Solo funciona si Render no esta bloqueado por Cloudflare para este
+// sitio; si lo esta, la app usa en cambio /mangaoni/fetch-url +
+// /mangaoni/parse para que el HTML lo traiga el celular del usuario.
+// ════════════════════════════════════════════════════════════
+async function searchContent(query) {
+  const html = await fetchHtml(buildSearchUrl(query));
+  return parseCatalogHtml(html).items;
+}
+
+async function getCatalog(page = 1, options = {}) {
+  const html = await fetchHtml(buildCatalogUrl(page, options));
+  return parseCatalogHtml(html);
+}
+
+async function getMangaInfo(mangaPath) {
+  const [tipo, slug] = String(mangaPath || "").split("/").filter(Boolean);
+  const html = await fetchHtml(buildInfoUrl(tipo, slug));
+  return parseInfoHtml(html, tipo, slug);
+}
+
+async function getChapterPages(uploadId) {
+  const cleanPath = String(uploadId || "").replace(/^\/+/, "");
+  const [slug, chapterId] = cleanPath.split("/").filter(Boolean);
+  if (!slug || !chapterId) {
+    throw new ApiError(400, "uploadId invalido (se espera 'slug/chapterId')");
+  }
+  const html = await fetchHtml(buildChapterUrl(slug, chapterId));
+  return parseChapterHtml(html, cleanPath);
+}
+
 module.exports = {
+  TIPOS_VALIDOS,
   searchContent,
   getCatalog,
   getMangaInfo,
   getChapterPages,
+  buildCatalogUrl,
+  buildSearchUrl,
+  buildInfoUrl,
+  buildChapterUrl,
+  parseCatalogHtml,
+  parseInfoHtml,
+  parseChapterHtml,
 };

@@ -115,4 +115,69 @@ router.get(
   })
 );
 
+// ── MangaOni via el celular del usuario ─────────────────────────
+// manga-oni.com esta detras de Cloudflare y bloquea la IP de Render (mismo
+// problema que ZonaTMO/KingComix antes). En vez de pagar un proxy, la app le
+// pide a este endpoint la URL exacta a pedir, la pide ELLA MISMA (con la IP
+// real del usuario, que Cloudflare no bloquea) y manda el HTML de vuelta acá
+// para que lo parseemos con el mismo cheerio que ya usa el fetch server-side
+// (mangaoni.service.js). Solo se usa para esta fuente -- las demas (sin
+// bloqueo de Cloudflare) siguen scrapeando directo desde Render arriba.
+router.get(
+  "/mangaoni/fetch-url",
+  asyncHandler(async (req, res) => {
+    const { type } = req.query;
+    let url;
+
+    if (type === "catalog") {
+      const sort = VALID_SORTS.has(req.query.sort) ? req.query.sort : null;
+      const generoId = Number(req.query.genero);
+      url = mangaoni.buildCatalogUrl(Number(req.query.page) || 1, {
+        tagIds: Number.isFinite(generoId) ? [generoId] : [],
+        sort,
+      });
+    } else if (type === "search") {
+      url = mangaoni.buildSearchUrl(req.query.q);
+    } else if (type === "info") {
+      url = mangaoni.buildInfoUrl(req.query.tipo, req.query.slug);
+    } else if (type === "chapter") {
+      url = mangaoni.buildChapterUrl(req.query.slug, req.query.chapterId);
+    } else {
+      throw new ApiError(400, "type invalido: usa catalog, search, info o chapter");
+    }
+
+    res.status(200).json({ success: true, url });
+  })
+);
+
+router.post(
+  "/mangaoni/parse",
+  // text/*: el body es el HTML crudo que trajo el celular, no JSON -- el
+  // express.json() global (server.js) ignora esto porque el content-type no
+  // matchea, asi que el stream le llega intacto a este parser.
+  express.text({ type: "*/*", limit: "5mb" }),
+  asyncHandler(async (req, res) => {
+    const { type } = req.query;
+    const html = req.body;
+    if (!html || typeof html !== "string") {
+      throw new ApiError(400, "Falta el HTML a parsear en el body de la peticion");
+    }
+
+    let data;
+    if (type === "catalog") {
+      data = mangaoni.parseCatalogHtml(html);
+    } else if (type === "search") {
+      data = mangaoni.parseCatalogHtml(html).items;
+    } else if (type === "info") {
+      data = mangaoni.parseInfoHtml(html, req.query.tipo, req.query.slug);
+    } else if (type === "chapter") {
+      data = mangaoni.parseChapterHtml(html, req.query.uploadId);
+    } else {
+      throw new ApiError(400, "type invalido: usa catalog, search, info o chapter");
+    }
+
+    res.status(200).json({ success: true, data, source: "mangaoni" });
+  })
+);
+
 module.exports = router;
