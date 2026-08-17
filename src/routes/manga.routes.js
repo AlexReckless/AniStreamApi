@@ -7,6 +7,7 @@ const olympus = require("../services/manga/olympus.service");
 const ehentai = require("../services/manga/ehentai.service");
 const infinitymanga = require("../services/manga/infinitymanga.service");
 const mangaoni = require("../services/manga/mangaoni.service");
+const hentai3 = require("../services/manga/3hentai.service");
 const { ApiError } = require("../utils/api-error");
 
 const router = express.Router();
@@ -32,6 +33,7 @@ const SOURCES = {
   tmohentai: { name: "TMOHentai", nsfw: true, service: tmohentai },
   simplyhentai: { name: "Simply Hentai", nsfw: true, service: simplyhentai },
   ehentai: { name: "E-Hentai", nsfw: true, service: ehentai },
+  "3hentai": { name: "3Hentai", nsfw: true, service: hentai3 },
 };
 
 function getSource(sourceId) {
