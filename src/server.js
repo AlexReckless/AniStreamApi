@@ -9,6 +9,7 @@ const animeRoutes = require("./routes/anime.routes");
 const moviesRoutes = require("./routes/movies.routes");
 const mangaRoutes = require("./routes/manga.routes");
 const downloadService = require("./services/download.service");
+const missavRoutes = require("./routes/missav.routes");
 const { ApiError } = require("./utils/api-error");
 
 const app = express();
@@ -22,6 +23,7 @@ app.use(
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 app.use(morgan("dev"));
+
 
 const downloadsDir = downloadService.getDownloadsDir();
 const staticDownloadOptions = {
@@ -45,6 +47,7 @@ app.get("/", (_req, res) => {
       legacy: ["/api/anime1v/search", "/api/anime1v/info", "/api/anime1v/episode"],
       movies: ["/api/v1/movies/search", "/api/v1/movies/catalog", "/api/v1/movies/info", "/api/v1/movies/servers", "/api/v1/movies/resolve"],
       manga: ["/api/v1/manga/sources", "/api/v1/manga/search", "/api/v1/manga/catalog", "/api/v1/manga/manga/:source/*", "/api/v1/manga/chapter/:source/*"],
+      missav: ["/api/v1/missav/search", "/api/v1/missav/info", "/api/v1/missav/catalog", "/api/v1/missav/english-subtitle"]
     },
   });
 });
@@ -57,6 +60,7 @@ app.use("/api/v1/anime", animeRoutes);
 app.use("/api/anime1v", animeRoutes);
 app.use("/api/v1/movies", moviesRoutes);
 app.use("/api/v1/manga", mangaRoutes);
+app.use("/api/v1/missav", missavRoutes);
 
 app.use((_req, _res, next) => {
   next(new ApiError(404, "Endpoint no encontrado"));
