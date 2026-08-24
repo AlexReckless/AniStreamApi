@@ -10,6 +10,9 @@ const HTML_HEADERS = {
   "Accept-Language": "en-US,en;q=0.9",
 };
 
+const BASE_URL = "https://missav.live";
+const SOURCE = "missav";
+
 async function fetchHtml(url) {
   try {
     const timeout = Number(process.env.REQUEST_TIMEOUT_MS || 15000);
@@ -32,6 +35,10 @@ function getAbsoluteUrl(base, path) {
   } catch (_error) {
     return path;
   }
+}
+
+function resolveBaseUrl(domain) {
+  return domain ? `https://${domain}` : BASE_URL;
 }
 
 // ── Decoder del empaquetador "Dean Edwards packer" ─────────────────────────
@@ -107,179 +114,211 @@ function parseVideoCards(html, baseUrl) {
       cover: getAbsoluteUrl(baseUrl, cover),
       duration,
       url: getAbsoluteUrl(baseUrl, href),
-      source: "missav",
+      source: SOURCE,
     });
   });
 
   return items;
 }
 
-class MissAVService {
-  constructor() {
-    this.baseUrl = "https://missav.live";
-    this.source = "missav";
+// ════════════════════════════════════════════════════════════
+// Construccion de URLs (puro, sin red) -- lo usa tanto el fetch
+// server-side de mas abajo como el endpoint /missav/fetch-url,
+// que le dice al celular que URL pedir cuando Render esta bloqueado.
+// ════════════════════════════════════════════════════════════
+function buildSearchUrl(baseUrl, query) {
+  if (!query || query.trim().length < 2) {
+    throw new ApiError(400, "El parámetro de búsqueda 'q' es requerido (mínimo 2 caracteres)");
+  }
+  // La busqueda real es "/en/search/{keyword}" (path, NO "?q="): el sitio
+  // la resuelve del lado del cliente (Alpine.js `search(keyword)` hace
+  // `location.href = '/en/search/'+keyword`) -- "?q=" nunca fue un
+  // endpoint real, siempre devolvia 404.
+  return `${baseUrl}/en/search/${encodeURIComponent(query.trim())}`;
+}
+
+function buildCatalogUrl(baseUrl, { genre = null, page = 1 } = {}) {
+  const pageNum = Math.max(1, Number(page) || 1);
+  // El sitio no tiene un "catalogo general" plano -- se navega por genero
+  // ("/en/genres/{genero}") o, sin genero, por la seccion "English
+  // Subtitle" ("/en/english-subtitle"); ambas paginan con "?page=N" y
+  // comparten el mismo template de card que parseVideoCards ya entiende.
+  const path = genre ? `/en/genres/${encodeURIComponent(genre)}` : "/en/english-subtitle";
+  return `${baseUrl}${path}${pageNum > 1 ? `?page=${pageNum}` : ""}`;
+}
+
+function buildGenresUrl(baseUrl) {
+  return `${baseUrl}/en/genres`;
+}
+
+// ════════════════════════════════════════════════════════════
+// Parseo (puro, sin red) -- reutilizable tanto si el HTML lo trajo
+// axios (fetchHtml de aca abajo) como si lo trajo la app desde el
+// celular del usuario (endpoint /missav/parse).
+// ════════════════════════════════════════════════════════════
+function parseSearchHtml(html, baseUrl, query) {
+  const results = parseVideoCards(html, baseUrl);
+  return { query, count: results.length, results };
+}
+
+function parseCatalogHtml(html, baseUrl, page) {
+  const videos = parseVideoCards(html, baseUrl);
+  return { page, hasNextPage: /rel="next"/.test(html), totalItems: videos.length, videos };
+}
+
+function parseGenresHtml(html, baseUrl) {
+  const $ = cheerio.load(html);
+  const genres = [];
+  const seen = new Set();
+
+  $('a[href*="/genres/"]').each((_, el) => {
+    const href = $(el).attr("href") || "";
+    const match = href.match(/\/genres\/([^/?#]+)/);
+    if (!match) return;
+    const slug = match[1];
+    if (seen.has(slug)) return;
+    const name = $(el).text().trim();
+    if (!name) return;
+    seen.add(slug);
+    genres.push({ id: decodeURIComponent(slug), name, url: getAbsoluteUrl(baseUrl, href) });
+  });
+
+  return { genres };
+}
+
+function parseInfoHtml(html, url) {
+  const $ = cheerio.load(html);
+
+  const title = $("h1").first().text().trim() || $('meta[property="og:title"]').attr("content") || "";
+  if (!title) {
+    throw new ApiError(404, "Video no encontrado en MissAV");
   }
 
-  async searchVideos(query, domain = null) {
-    if (!query || query.trim().length < 2) {
-      throw new ApiError(400, "El parámetro de búsqueda 'q' es requerido (mínimo 2 caracteres)");
-    }
-    const baseUrl = domain ? `https://${domain}` : this.baseUrl;
-    // La busqueda real es "/en/search/{keyword}" (path, NO "?q="): el sitio
-    // la resuelve del lado del cliente (Alpine.js `search(keyword)` hace
-    // `location.href = '/en/search/'+keyword`) -- "?q=" nunca fue un
-    // endpoint real, siempre devolvia 404.
-    const searchUrl = `${baseUrl}/en/search/${encodeURIComponent(query.trim())}`;
-    const html = await fetchHtml(searchUrl);
-    const results = parseVideoCards(html, baseUrl);
+  const cover = $('meta[property="og:image"]').attr("content") || "";
+  const description =
+    $('meta[name="description"]').attr("content") || $('meta[property="og:description"]').attr("content") || "";
 
-    return {
-      success: true,
-      source: this.source,
-      data: { query: query.trim(), count: results.length, results },
-    };
+  // Filas de metadatos: <div class="text-secondary"><span>Label:</span>
+  // {valor}</div> -- "valor" es uno-o-mas <a> (Actress/Genre/Tag/Maker/
+  // Director/Label) o un <time>/<span class="font-medium"> suelto
+  // (Release date/Code/Title). No todos los videos tienen todas las filas
+  // (los FC2 amateur no tienen Actress/Genre/Maker, por ejemplo).
+  const meta = {};
+  $(".text-secondary").each((_, el) => {
+    const row = $(el);
+    const label = row.find("span").first().text().trim().replace(/:$/, "");
+    if (!label) return;
+    const links = row.find("a");
+    if (links.length > 0) {
+      meta[label] = links
+        .map((__, a) => $(a).text().trim())
+        .get()
+        .filter(Boolean);
+    } else {
+      meta[label] = row.find("time, span.font-medium").first().text().trim();
+    }
+  });
+
+  const streams = extractStreamUrls(html);
+
+  return {
+    id: url.split("/").filter(Boolean).pop(),
+    title,
+    cover,
+    description,
+    code: meta.Code || null,
+    releaseDate: meta["Release date"] || null,
+    actresses: Array.isArray(meta.Actress) ? meta.Actress : [],
+    genres: Array.isArray(meta.Genre) ? meta.Genre : [],
+    tags: Array.isArray(meta.Tag) ? meta.Tag : [],
+    maker: Array.isArray(meta.Maker) ? meta.Maker[0] : meta.Maker || null,
+    director: Array.isArray(meta.Director) ? meta.Director[0] : meta.Director || null,
+    hasStreams: streams.length > 0,
+    url,
+    source: SOURCE,
+  };
+}
+
+function parseLinksHtml(html) {
+  const title = cheerio.load(html)("h1").first().text().trim() || "Video";
+
+  // El sitio no tiene "servidores" alternativos como los scrapers de
+  // anime (Mega, mirrors, etc.) -- el player oficial saca un master
+  // playlist HLS (.m3u8, CDN surrit.com) de un bloque de JS empacado en
+  // la propia pagina (ver extractStreamUrls). Es un solo stream HLS
+  // reproducible directo, mismo tipo de fuente que ya usa IptvPlayerScreen
+  // en la app -- no hace falta WebView ni iframe.
+  const streams = extractStreamUrls(html);
+  if (streams.length === 0) {
+    throw new ApiError(404, "No se encontraron enlaces de video para esta URL");
   }
+  const master = streams.find((u) => u.includes("playlist.m3u8")) || streams[0];
 
-  async getCatalog({ genre = null, page = 1, domain = null }) {
-    const baseUrl = domain ? `https://${domain}` : this.baseUrl;
-    const pageNum = Math.max(1, Number(page) || 1);
-    // El sitio no tiene un "catalogo general" plano -- se navega por genero
-    // ("/en/genres/{genero}") o, sin genero, por la seccion "English
-    // Subtitle" ("/en/english-subtitle"); ambas paginan con "?page=N" y
-    // comparten el mismo template de card que parseVideoCards ya entiende.
-    const path = genre ? `/en/genres/${encodeURIComponent(genre)}` : "/en/english-subtitle";
-    const catalogUrl = `${baseUrl}${path}${pageNum > 1 ? `?page=${pageNum}` : ""}`;
-    const html = await fetchHtml(catalogUrl);
-    const videos = parseVideoCards(html, baseUrl);
+  return { title, hls: master, variants: streams.filter((u) => u !== master) };
+}
 
-    return {
-      success: true,
-      source: this.source,
-      data: {
-        page: pageNum,
-        hasNextPage: /rel="next"/.test(html),
-        totalItems: videos.length,
-        videos,
-      },
-    };
-  }
+// ════════════════════════════════════════════════════════════
+// Fetch server-side (build + fetchHtml + parse) -- interfaz que
+// espera el dispatcher generico de missav.routes.js. Solo funciona si
+// Render no esta bloqueado por Cloudflare para missav.live; si lo esta
+// (como paso: 403 desde la IP de Render), la app usa en cambio
+// /missav/fetch-url + /missav/parse para que el HTML lo traiga el
+// celular del usuario (misma solucion que mangaoni.service.js).
+// ════════════════════════════════════════════════════════════
+async function searchVideos(query, domain = null) {
+  const baseUrl = resolveBaseUrl(domain);
+  const html = await fetchHtml(buildSearchUrl(baseUrl, query));
+  return { success: true, source: SOURCE, data: parseSearchHtml(html, baseUrl, query.trim()) };
+}
 
-  async getAvailableGenres(domain = null) {
-    const baseUrl = domain ? `https://${domain}` : this.baseUrl;
-    try {
-      const html = await fetchHtml(`${baseUrl}/en/genres`);
-      const $ = cheerio.load(html);
-      const genres = [];
-      const seen = new Set();
+async function getCatalog({ genre = null, page = 1, domain = null } = {}) {
+  const baseUrl = resolveBaseUrl(domain);
+  const pageNum = Math.max(1, Number(page) || 1);
+  const html = await fetchHtml(buildCatalogUrl(baseUrl, { genre, page: pageNum }));
+  return { success: true, source: SOURCE, data: parseCatalogHtml(html, baseUrl, pageNum) };
+}
 
-      $('a[href*="/genres/"]').each((_, el) => {
-        const href = $(el).attr("href") || "";
-        const match = href.match(/\/genres\/([^/?#]+)/);
-        if (!match) return;
-        const slug = match[1];
-        if (seen.has(slug)) return;
-        const name = $(el).text().trim();
-        if (!name) return;
-        seen.add(slug);
-        genres.push({ id: decodeURIComponent(slug), name, url: getAbsoluteUrl(baseUrl, href) });
-      });
-
-      return { success: true, source: this.source, data: { genres } };
-    } catch (_error) {
-      return { success: true, source: this.source, data: { genres: [] } };
-    }
-  }
-
-  async getVideoInfo(url) {
-    if (!url) {
-      throw new ApiError(400, "Se requiere la URL del video");
-    }
-
-    const html = await fetchHtml(url);
-    const $ = cheerio.load(html);
-
-    const title = $("h1").first().text().trim() || $('meta[property="og:title"]').attr("content") || "";
-    if (!title) {
-      throw new ApiError(404, "Video no encontrado en MissAV");
-    }
-
-    const cover = $('meta[property="og:image"]').attr("content") || "";
-    const description =
-      $('meta[name="description"]').attr("content") || $('meta[property="og:description"]').attr("content") || "";
-
-    // Filas de metadatos: <div class="text-secondary"><span>Label:</span>
-    // {valor}</div> -- "valor" es uno-o-mas <a> (Actress/Genre/Tag/Maker/
-    // Director/Label) o un <time>/<span class="font-medium"> suelto
-    // (Release date/Code/Title). No todos los videos tienen todas las filas
-    // (los FC2 amateur no tienen Actress/Genre/Maker, por ejemplo).
-    const meta = {};
-    $(".text-secondary").each((_, el) => {
-      const row = $(el);
-      const label = row.find("span").first().text().trim().replace(/:$/, "");
-      if (!label) return;
-      const links = row.find("a");
-      if (links.length > 0) {
-        meta[label] = links
-          .map((__, a) => $(a).text().trim())
-          .get()
-          .filter(Boolean);
-      } else {
-        meta[label] = row.find("time, span.font-medium").first().text().trim();
-      }
-    });
-
-    const streams = extractStreamUrls(html);
-
-    const videoInfo = {
-      id: url.split("/").filter(Boolean).pop(),
-      title,
-      cover,
-      description,
-      code: meta.Code || null,
-      releaseDate: meta["Release date"] || null,
-      actresses: Array.isArray(meta.Actress) ? meta.Actress : [],
-      genres: Array.isArray(meta.Genre) ? meta.Genre : [],
-      tags: Array.isArray(meta.Tag) ? meta.Tag : [],
-      maker: Array.isArray(meta.Maker) ? meta.Maker[0] : meta.Maker || null,
-      director: Array.isArray(meta.Director) ? meta.Director[0] : meta.Director || null,
-      hasStreams: streams.length > 0,
-      url,
-      source: this.source,
-    };
-
-    return { success: true, source: this.source, data: videoInfo };
-  }
-
-  async getVideoLinks(url) {
-    if (!url) {
-      throw new ApiError(400, "Se requiere la URL del video");
-    }
-
-    const html = await fetchHtml(url);
-    const title = cheerio.load(html)("h1").first().text().trim() || "Video";
-
-    // El sitio no tiene "servidores" alternativos como los scrapers de
-    // anime (Mega, mirrors, etc.) -- el player oficial saca un master
-    // playlist HLS (.m3u8, CDN surrit.com) de un bloque de JS empacado en
-    // la propia pagina (ver extractStreamUrls). Es un solo stream HLS
-    // reproducible directo, mismo tipo de fuente que ya usa IptvPlayerScreen
-    // en la app -- no hace falta WebView ni iframe.
-    const streams = extractStreamUrls(html);
-    if (streams.length === 0) {
-      throw new ApiError(404, "No se encontraron enlaces de video para esta URL");
-    }
-    const master = streams.find((u) => u.includes("playlist.m3u8")) || streams[0];
-
-    return {
-      success: true,
-      source: this.source,
-      data: {
-        title,
-        hls: master,
-        variants: streams.filter((u) => u !== master),
-      },
-    };
+async function getAvailableGenres(domain = null) {
+  const baseUrl = resolveBaseUrl(domain);
+  try {
+    const html = await fetchHtml(buildGenresUrl(baseUrl));
+    return { success: true, source: SOURCE, data: parseGenresHtml(html, baseUrl) };
+  } catch (_error) {
+    return { success: true, source: SOURCE, data: { genres: [] } };
   }
 }
 
-module.exports = new MissAVService();
+async function getVideoInfo(url) {
+  if (!url) {
+    throw new ApiError(400, "Se requiere la URL del video");
+  }
+  const html = await fetchHtml(url);
+  return { success: true, source: SOURCE, data: parseInfoHtml(html, url) };
+}
+
+async function getVideoLinks(url) {
+  if (!url) {
+    throw new ApiError(400, "Se requiere la URL del video");
+  }
+  const html = await fetchHtml(url);
+  return { success: true, source: SOURCE, data: parseLinksHtml(html) };
+}
+
+module.exports = {
+  baseUrl: BASE_URL,
+  source: SOURCE,
+  searchVideos,
+  getCatalog,
+  getAvailableGenres,
+  getVideoInfo,
+  getVideoLinks,
+  buildSearchUrl,
+  buildCatalogUrl,
+  buildGenresUrl,
+  parseSearchHtml,
+  parseCatalogHtml,
+  parseGenresHtml,
+  parseInfoHtml,
+  parseLinksHtml,
+  resolveBaseUrl,
+};
