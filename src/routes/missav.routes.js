@@ -1,3 +1,4 @@
+// routes/missav.routes.js
 const express = require("express");
 const { requireApiKey } = require("../middlewares/auth");
 const { dailyRateLimit } = require("../middlewares/rate-limit");
@@ -16,58 +17,60 @@ function asyncHandler(handler) {
   };
 }
 
-// Todas las rutas requieren API key y tienen límite de tasa
+// Este router ya se monta en "/api/v1/missav" (ver server.js) -- las rutas
+// de aca abajo van SIN ese prefijo repetido (antes tenian "/missav/..." acá
+// adentro tambien, lo que las dejaba en "/api/v1/missav/missav/...").
 router.use(requireApiKey, dailyRateLimit);
 
-// Búsqueda de videos
 router.get(
   "/search",
   asyncHandler(async (req, res) => {
     if (!req.query.q) {
-      throw new ApiError(400, "Se requiere el parámetro q para la búsqueda");
+      throw new ApiError(400, "Se requiere el parametro q para buscar");
     }
-    
-    const page = req.query.page || 1;
-    const response = await missavService.searchVideos(req.query.q, page);
+    const response = await missavService.searchVideos(req.query.q, req.query.domain);
     res.status(200).json(response);
   })
 );
 
-// Información de un video específico
 router.get(
   "/info",
   asyncHandler(async (req, res) => {
     if (!req.query.url) {
-      throw new ApiError(400, "Se requiere el parámetro url");
+      throw new ApiError(400, "Se requiere el parametro url");
     }
-    
     const response = await missavService.getVideoInfo(req.query.url);
     res.status(200).json(response);
   })
 );
 
-// Catálogo (página principal o con filtros)
+router.get(
+  "/links",
+  asyncHandler(async (req, res) => {
+    if (!req.query.url) {
+      throw new ApiError(400, "Se requiere el parametro url");
+    }
+    const response = await missavService.getVideoLinks(req.query.url);
+    res.status(200).json(response);
+  })
+);
+
 router.get(
   "/catalog",
   asyncHandler(async (req, res) => {
     const response = await missavService.getCatalog({
-      page: req.query.page || 1,
-      filter: req.query.filter || 'new'
+      genre: req.query.genre,
+      page: req.query.page,
+      domain: req.query.domain,
     });
     res.status(200).json(response);
   })
 );
 
-// Búsqueda con filtro de subtítulos en inglés (como la URL que mencionaste)
 router.get(
-  "/english-subtitle",
+  "/genres",
   asyncHandler(async (req, res) => {
-    const page = req.query.page || 1;
-    // Usamos el catálogo pero forzamos el filtro de subtítulos en inglés
-    const response = await missavService.getCatalog({
-      page,
-      filter: 'english-subtitle'
-    });
+    const response = await missavService.getAvailableGenres(req.query.domain);
     res.status(200).json(response);
   })
 );
